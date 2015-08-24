@@ -2,6 +2,7 @@ package batchio
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -29,14 +30,16 @@ var bigData = []byte(strings.Repeat("x", maxSize*2))
 
 var cw *countingWriter
 var bw *Writer
+var dw *DeadlineBufWriter
 
 func before() {
 	cw = &countingWriter{}
 	bw = NewWriter(cw, 100*time.Millisecond, maxSize)
+	dw = NewDeadlineBufWriter(cw, 100*time.Millisecond, maxSize)
 }
 
-func write(data []byte, name string) error {
-	n, err := bw.Write(data)
+func write(w io.Writer, data []byte, name string) error {
+	n, err := w.Write(data)
 
 	if n != len(data) {
 		return fmt.Errorf("%s: Short write", name)
@@ -49,19 +52,19 @@ func write(data []byte, name string) error {
 	return nil
 }
 
-func writeT(t *testing.T, data []byte, name string) {
-	if err := write(data, name); err != nil {
+func writeT(t *testing.T, w io.Writer, data []byte, name string) {
+	if err := write(w, data, name); err != nil {
 		t.Error(err.Error())
 	}
 }
 
-func TestFlushSmallWrite(t *testing.T) {
+func TestFlushSmallWriteB(t *testing.T) {
 	before()
 
 	// Writes should be flushed after timeout
 	now := time.Now()
 
-	writeT(t, smallData, "Single short write call")
+	writeT(t, bw, smallData, "Single short write call")
 
 	if time.Since(now) < bw.Timeout() {
 		t.Error("Short write returned too fast")
@@ -72,7 +75,7 @@ func TestFlushSmallWrite(t *testing.T) {
 	}
 }
 
-func TestBatchSmallWrites(t *testing.T) {
+func TestBatchSmallWritesB(t *testing.T) {
 	before()
 
 	nSmallWrites := 5
@@ -84,7 +87,7 @@ func TestBatchSmallWrites(t *testing.T) {
 		wg.Add(1)
 
 		go func(idx int) {
-			writeErrors <- write(smallData, fmt.Sprintf("Short write call %d", idx))
+			writeErrors <- write(bw, smallData, fmt.Sprintf("Short write call %d", idx))
 			wg.Done()
 		}(i)
 	}
@@ -102,27 +105,29 @@ func TestBatchSmallWrites(t *testing.T) {
 	}
 }
 
-func TestFlushBigWrites(t *testing.T) {
+func TestFlushBigWritesB(t *testing.T) {
 	before()
 
 	now := time.Now()
-	writeT(t, bigData, "Single big write call")
+	writeT(t, bw, bigData, "Single big write call")
 
 	if time.Since(now) > bw.Timeout() {
 		t.Error("Write call took too long")
 	}
 }
 
-func TestReportError(t *testing.T) {
+func TestReportErrorB(t *testing.T) {
+	before()
+
 	cw.err = fmt.Errorf("Neh")
 
-	err := write(smallData, "Short write call")
+	err := write(bw, smallData, "Short write call")
 
 	if err == nil {
 		t.Errorf("Error on short write call didn't get forwarded")
 	}
 
-	err = write(bigData, "Big write call")
+	err = write(bw, bigData, "Big write call")
 
 	if err == nil {
 		t.Errorf("Error on big write call didn't get forwarded")

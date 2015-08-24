@@ -99,7 +99,7 @@ var TimeoutLimit int64 = 10
 type Conn struct {
 	conn    net.Conn
 	r       *bufio.Reader
-	w       *batchio.Writer
+	w       *batchio.DeadlineBufWriter
 	timeout time.Duration
 
 	headerBuf []byte
@@ -170,7 +170,7 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 	c := &Conn{
 		conn:         conn,
 		r:            bufio.NewReader(conn),
-		w:            batchio.NewWriter(conn, connCoalesceTimeout, 1024 /* bytes */),
+		w:            batchio.NewDeadlineBufWriter(conn, connCoalesceTimeout, 1024 /* bytes */),
 		uniq:         make(chan int, cfg.NumStreams),
 		calls:        make([]callReq, cfg.NumStreams),
 		timeout:      cfg.Timeout,
