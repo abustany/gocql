@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/gocql/gocql/batchio"
 	"io"
 	"io/ioutil"
 	"log"
@@ -98,6 +99,7 @@ var TimeoutLimit int64 = 10
 type Conn struct {
 	conn    net.Conn
 	r       *bufio.Reader
+	w       *batchio.Writer
 	timeout time.Duration
 
 	headerBuf []byte
@@ -118,6 +120,8 @@ type Conn struct {
 
 	timeouts int64
 }
+
+const connCoalesceTimeout = 200 * time.Microsecond
 
 // Connect establishes a connection to a Cassandra node.
 // You must also call the Serve method before you can execute any queries.
@@ -166,6 +170,7 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 	c := &Conn{
 		conn:         conn,
 		r:            bufio.NewReader(conn),
+		w:            batchio.NewWriter(conn, connCoalesceTimeout, 1024 /* bytes */),
 		uniq:         make(chan int, cfg.NumStreams),
 		calls:        make([]callReq, cfg.NumStreams),
 		timeout:      cfg.Timeout,
@@ -202,10 +207,10 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 
 func (c *Conn) Write(p []byte) (int, error) {
 	if c.timeout > 0 {
-		c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
+		c.conn.SetWriteDeadline(time.Now().Add(c.timeout).Add(connCoalesceTimeout))
 	}
 
-	return c.conn.Write(p)
+	return c.w.Write(p)
 }
 
 func (c *Conn) Read(p []byte) (n int, err error) {
