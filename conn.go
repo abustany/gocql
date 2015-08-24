@@ -102,7 +102,8 @@ type Conn struct {
 	w       *batchio.DeadlineBufWriter
 	timeout time.Duration
 
-	headerBuf []byte
+	timeoutPool *sync.Pool
+	headerBuf   []byte
 
 	uniq  chan int
 	calls []callReq
@@ -167,6 +168,12 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 		cfg.NumStreams++
 	}
 
+	timeoutPool := &sync.Pool{
+		New: func() interface{} {
+			return time.NewTimer(cfg.Timeout)
+		},
+	}
+
 	c := &Conn{
 		conn:         conn,
 		r:            bufio.NewReader(conn),
@@ -174,6 +181,7 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 		uniq:         make(chan int, cfg.NumStreams),
 		calls:        make([]callReq, cfg.NumStreams),
 		timeout:      cfg.Timeout,
+		timeoutPool:  timeoutPool,
 		version:      uint8(cfg.ProtoVersion),
 		addr:         conn.RemoteAddr().String(),
 		errorHandler: errorHandler,
@@ -470,17 +478,24 @@ func (c *Conn) exec(req frameWriter, tracer Tracer) (frame, error) {
 		return nil, err
 	}
 
+	timeoutTimer := c.timeoutPool.Get().(*time.Timer)
+	timeoutTimer.Reset(c.timeout)
+
 	select {
-	case err := <-call.resp:
-		if err != nil {
-			return nil, err
-		}
-	case <-time.After(c.timeout):
+	case err = <-call.resp:
+	case <-timeoutTimer.C:
 		close(call.timeout)
 		c.handleTimeout()
-		return nil, ErrTimeoutNoResponse
+		err = ErrTimeoutNoResponse
 	case <-c.quit:
-		return nil, ErrConnectionClosed
+		err = ErrConnectionClosed
+	}
+
+	timeoutTimer.Stop()
+	c.timeoutPool.Put(timeoutTimer)
+
+	if err != nil {
+		return nil, err
 	}
 
 	// dont release the stream if detect a timeout as another request can reuse
